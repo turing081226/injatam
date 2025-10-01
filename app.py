@@ -496,14 +496,24 @@ NAMES = list(MARKET["nodes"].keys())
 # ------------------------------------------------------------
 # 상단바: 로그인 + 회원가입 (우측)
 # ------------------------------------------------------------
+# ------------------------------------------------------------
+# 상단바: 로그인 + 회원가입 (우측)
+# ------------------------------------------------------------
 colL, colR = st.columns([0.8, 0.2])
 with colL:
     st.title("🛍️ 부여 중앙시장 맞춤 탐색")
 
+# 로그인 배지(항상 상단에 표시)
+auth_ok = st.session_state.get("auth_ok", False)
+auth_name = st.session_state.get("auth_name", None)
+auth_user = st.session_state.get("auth_user", None)
+if auth_ok and auth_name:
+    st.caption(f"🔓 로그인됨: {auth_name} (@{auth_user})")
+
 with colR:
     with st.popover("🔐 계정", use_container_width=True):
-
-        # ── 로그인 (성공/실패 사유 표시)
+        st.markdown("##### 로그인")
+        # ── 로그인
         try:
             name, auth_status, username = authenticator.login(
                 location="main",
@@ -517,26 +527,36 @@ with colR:
             ) or (None, None, None)
         except Exception as e:
             st.error(f"로그인 위젯 오류: {e}")
-            name, auth_status, username = None, None, None
+            name = auth_status = username = None
 
-        # 로그인 결과 안내
+        # 로그인 결과 안내 + 세션 저장
         if auth_status is True:
             st.success(f"✅ 로그인 성공: {name} 님 환영합니다!")
-            authenticator.logout(button_name="로그아웃", location="main", key="logout_btn")
+            st.session_state["auth_ok"] = True
+            st.session_state["auth_name"] = name
+            st.session_state["auth_user"] = username
+
+            authenticator.logout(
+                button_name="로그아웃",
+                location="main",
+                key="logout_btn",
+            )
+
         elif auth_status is False:
             # 아이디 존재 여부로 원인 구분
-            usernames = (config.get("credentials", {}) or {}).get("usernames", {}) or {}
-            if username and username not in usernames:
+            _creds = authenticator.credentials or {}
+            _users = (_creds.get("usernames") or {}).keys()
+            if username and username not in _users:
                 st.error("❌ 로그인 실패: 존재하지 않는 아이디입니다.")
             else:
                 st.error("❌ 로그인 실패: 비밀번호가 올바르지 않습니다.")
         else:
-            st.info("로그인해 주세요.")
+            st.info("아이디/비밀번호를 입력해 로그인하세요.")
 
         st.divider()
         st.subheader("회원가입")
 
-        # ── 회원가입 (성공/실패 사유 표시, 어떤 예외든 잡아서 화면 유지)
+        # ── 회원가입 (버전별 리턴값 대응 + 저장 보장)
         reg_email = reg_user = reg_name = None
         try:
             reg_out = authenticator.register_user(
@@ -545,7 +565,8 @@ with colR:
                     "Form name": "회원가입",
                     "Email": "이메일",
                     "Username": "아이디",
-                    "Name": "이름",                     # ← 현재 설치된 버전에 가장 호환되는 키
+                    # 최신/구버전 둘 다 커버를 위해 'Name' 유지
+                    "Name": "이름",
                     "Password": "비밀번호",
                     "Repeat password": "비밀번호 확인",
                     "Register": "가입",
@@ -554,27 +575,39 @@ with colR:
                 password_hint=True,
                 key="register_form",
             )
-
-            # 리턴값 표준화 (버전별로 3개 또는 4개 반환 가능)
+            # 리턴값 정규화: bool / tuple 모두 대응
             if isinstance(reg_out, tuple):
+                # (email, username, name) 혹은 (email, username, first, last)
                 if len(reg_out) == 3:
                     reg_email, reg_user, reg_name = reg_out
                 elif len(reg_out) == 4:
                     reg_email, reg_user, first, last = reg_out
                     reg_name = f"{last}{first}".strip()
+            elif reg_out is True:
+                # 일부 버전은 True만 반환 → 직후 credentials에서 방금 등록된 사용자 추출 시도
+                new_users = list((authenticator.credentials.get("usernames") or {}).keys())
+                reg_user = new_users[-1] if new_users else None
+                # 이름/이메일은 알 수 없을 수도 있음 → 일단 사용자명만 표기
+                reg_email, reg_name = "", reg_user
+
         except Exception as e:
-            # 라이브러리에서 주는 자세한 사유(중복 아이디, 비밀번호 정책 위반 등)
             st.error(f"❌ 회원가입 실패: {e}")
 
-        if reg_email and reg_user and reg_name:
-            # 내부 config 갱신 내용 저장
+        # ★ 핵심: 내부 credentials를 config에 반영해서 파일로 저장 ★
+        if reg_user:
             try:
+                # authenticator.credentials 형태: {"usernames": {user: {email,name,password}}}
+                config["credentials"] = authenticator.credentials
                 save_auth_config(config)
+                st.success(f"✅ 회원가입 완료: {reg_name or reg_user} 님, 이제 로그인해 주세요.")
             except Exception as e:
-                st.warning(f"구성 저장 중 경고: {e}")
-            st.success(f"✅ 회원가입 완료: {reg_name}님, 이제 로그인해 주세요.")
+                st.error(f"저장 실패(관리자용): {e}")
 
-UID = username if 'auth_status' in locals() and auth_status else None
+# 로그인 상태에 따라 UID 세팅
+UID = None
+if st.session_state.get("auth_ok"):
+    UID = st.session_state.get("auth_user")
+
 PROFILE = get_user_profile(UID)
 
 with st.sidebar.expander("개인화/가중치"):
@@ -965,6 +998,7 @@ with tab_path:
             st_folium(result_map, height=500, width=None)
         else:
             st.error("(저장됨) 경로를 찾지 못했습니다.")
+
 
 
 
