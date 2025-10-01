@@ -1,0 +1,9 @@
+streamlit
+streamlit-authenticator
+streamlit-chat
+streamlit-folium
+folium
+numpy
+matplotlib
+PyYAML
+google-generativeai
