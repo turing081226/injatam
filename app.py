@@ -495,7 +495,6 @@ with colL:
 with colR:
     with st.popover("🔐 계정", use_container_width=True):
         # ── 로그인
-        name = auth_status = username = None
         try:
             name, auth_status, username = authenticator.login(
                 location="main",
@@ -508,30 +507,29 @@ with colR:
                 key="login_form",
             ) or (None, None, None)
         except Exception as e:
+            name = auth_status = username = None
             st.error(f"로그인 위젯 오류: {e}")
 
-        # ── 로그인 결과 표시 + 세션 상태 반영
         if auth_status is True:
-            # 상단/사이드바에서 쓸 수 있도록 세션에 저장
-            st.session_state["_auth_user"] = {"name": name, "username": username}
-            st.success(f"✅ 로그인 성공: {name} 님 환영합니다!")
+            st.session_state["_auth_user"] = {"name": name or username, "username": username}
+            st.success(f"✅ 로그인 성공: {name or username} 님 환영합니다!")
             authenticator.logout(button_name="로그아웃", location="main", key="logout_btn")
+            st.rerun()  # 배지 즉시 반영
         elif auth_status is False:
             st.session_state["_auth_user"] = None
+            # 존재하지 않는 계정 vs 비밀번호 오류 구분
             usernames = (config.get("credentials", {}) or {}).get("usernames", {}) or {}
             if username and username not in usernames:
                 st.error("❌ 로그인 실패: 존재하지 않는 아이디입니다.")
             else:
                 st.error("❌ 로그인 실패: 비밀번호가 올바르지 않습니다.")
         else:
-            # 아직 시도하지 않음(쿠키에 로그인 유지 중일 수 있음)
-            # streamlit-authenticator가 쿠키로 복원했다면 아래 배지/사이드바가 알아서 표시됨
             st.info("로그인해 주세요.")
 
         st.divider()
         st.subheader("회원가입")
 
-        # ── 회원가입 (신/구 폼 모두 대응)
+        # ── 회원가입 (신/구 폼 호환)
         reg_email = reg_user = reg_name = None
         try:
             reg_out = authenticator.register_user(
@@ -556,7 +554,7 @@ with colR:
                     reg_email, reg_user, first, last = reg_out
                     reg_name = f"{last}{first}".strip()
         except Exception:
-            # 라이브러리 구버전(First/Last name) 폼 재시도
+            # 구버전 키로 재시도 (First/Last name)
             try:
                 reg_out2 = authenticator.register_user(
                     location="main",
@@ -587,10 +585,18 @@ with colR:
             save_auth_config(config)
             st.success(f"✅ 회원가입 완료: {reg_name}님, 이제 로그인해 주세요.")
 
-# 🔔 사이드바에도 상태 한 줄 고정 표시
-if st.session_state.get("_auth_user"):
-    _nm = st.session_state["_auth_user"].get("name") or st.session_state["_auth_user"].get("username")
-    st.sidebar.success(f"로그인됨: {_nm}")
+# ── 쿠키로 자동 로그인 복원된 경우도 세션 채워주기
+if st.session_state.get("authentication_status") is True and not st.session_state.get("_auth_user"):
+    nm = st.session_state.get("name") or st.session_state.get("username")
+    un = st.session_state.get("username")
+    if nm or un:
+        st.session_state["_auth_user"] = {"name": nm or un, "username": un}
+
+# ── 배지/사이드바 상태 출력 (폼 블록 '이후'에 배치)
+auth_user = st.session_state.get("_auth_user")
+if auth_user:
+    st.markdown(_login_badge_html(auth_user), unsafe_allow_html=True)
+    st.sidebar.success(f"로그인됨: {auth_user.get('name') or auth_user.get('username')}")
 else:
     st.sidebar.info("로그인 필요")
 
@@ -937,5 +943,6 @@ with tab_path:
             st_folium(result_map, height=500, width=None)
         else:
             st.error("(저장됨) 경로를 찾지 못했습니다.")
+
 
 
