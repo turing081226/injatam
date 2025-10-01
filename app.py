@@ -500,14 +500,10 @@ colL, colR = st.columns([0.8, 0.2])
 with colL:
     st.title("🛍️ 부여 중앙시장 맞춤 탐색")
 
-    # 🔒 상단에 '항상' 로그인 상태 배지 출력 (로그인한 경우)
-    auth_user = st.session_state.get("_auth_user")
-    if auth_user:
-        st.markdown(_login_badge_html(auth_user), unsafe_allow_html=True)
-
 with colR:
     with st.popover("🔐 계정", use_container_width=True):
-        # ── 로그인
+
+        # ── 로그인 (성공/실패 사유 표시)
         try:
             name, auth_status, username = authenticator.login(
                 location="main",
@@ -520,17 +516,15 @@ with colR:
                 key="login_form",
             ) or (None, None, None)
         except Exception as e:
-            name = auth_status = username = None
             st.error(f"로그인 위젯 오류: {e}")
+            name, auth_status, username = None, None, None
 
+        # 로그인 결과 안내
         if auth_status is True:
-            st.session_state["_auth_user"] = {"name": name or username, "username": username}
-            st.success(f"✅ 로그인 성공: {name or username} 님 환영합니다!")
+            st.success(f"✅ 로그인 성공: {name} 님 환영합니다!")
             authenticator.logout(button_name="로그아웃", location="main", key="logout_btn")
-            st.rerun()  # 배지 즉시 반영
         elif auth_status is False:
-            st.session_state["_auth_user"] = None
-            # 존재하지 않는 계정 vs 비밀번호 오류 구분
+            # 아이디 존재 여부로 원인 구분
             usernames = (config.get("credentials", {}) or {}).get("usernames", {}) or {}
             if username and username not in usernames:
                 st.error("❌ 로그인 실패: 존재하지 않는 아이디입니다.")
@@ -542,7 +536,7 @@ with colR:
         st.divider()
         st.subheader("회원가입")
 
-        # ── 회원가입 (신/구 폼 호환)
+        # ── 회원가입 (성공/실패 사유 표시, 어떤 예외든 잡아서 화면 유지)
         reg_email = reg_user = reg_name = None
         try:
             reg_out = authenticator.register_user(
@@ -551,7 +545,7 @@ with colR:
                     "Form name": "회원가입",
                     "Email": "이메일",
                     "Username": "아이디",
-                    "Name": "이름",
+                    "Name": "이름",                     # ← 현재 설치된 버전에 가장 호환되는 키
                     "Password": "비밀번호",
                     "Repeat password": "비밀번호 확인",
                     "Register": "가입",
@@ -560,58 +554,25 @@ with colR:
                 password_hint=True,
                 key="register_form",
             )
+
+            # 리턴값 표준화 (버전별로 3개 또는 4개 반환 가능)
             if isinstance(reg_out, tuple):
                 if len(reg_out) == 3:
                     reg_email, reg_user, reg_name = reg_out
                 elif len(reg_out) == 4:
                     reg_email, reg_user, first, last = reg_out
                     reg_name = f"{last}{first}".strip()
-        except Exception:
-            # 구버전 키로 재시도 (First/Last name)
-            try:
-                reg_out2 = authenticator.register_user(
-                    location="main",
-                    fields={
-                        "Form name": "회원가입(구버전)",
-                        "Email": "이메일",
-                        "Username": "아이디",
-                        "First name": "이름",
-                        "Last name": "성",
-                        "Password": "비밀번호",
-                        "Repeat password": "비밀번호 확인",
-                        "Register": "가입",
-                    },
-                    captcha=False,
-                    password_hint=True,
-                    key="register_form_v2",
-                )
-                if isinstance(reg_out2, tuple):
-                    if len(reg_out2) == 3:
-                        reg_email, reg_user, reg_name = reg_out2
-                    elif len(reg_out2) == 4:
-                        reg_email, reg_user, first, last = reg_out2
-                        reg_name = f"{last}{first}".strip()
-            except Exception as e2:
-                st.error(f"❌ 회원가입 실패: {e2}")
+        except Exception as e:
+            # 라이브러리에서 주는 자세한 사유(중복 아이디, 비밀번호 정책 위반 등)
+            st.error(f"❌ 회원가입 실패: {e}")
 
         if reg_email and reg_user and reg_name:
-            save_auth_config(config)
+            # 내부 config 갱신 내용 저장
+            try:
+                save_auth_config(config)
+            except Exception as e:
+                st.warning(f"구성 저장 중 경고: {e}")
             st.success(f"✅ 회원가입 완료: {reg_name}님, 이제 로그인해 주세요.")
-
-# ── 쿠키로 자동 로그인 복원된 경우도 세션 채워주기
-if st.session_state.get("authentication_status") is True and not st.session_state.get("_auth_user"):
-    nm = st.session_state.get("name") or st.session_state.get("username")
-    un = st.session_state.get("username")
-    if nm or un:
-        st.session_state["_auth_user"] = {"name": nm or un, "username": un}
-
-# ── 배지/사이드바 상태 출력 (폼 블록 '이후'에 배치)
-auth_user = st.session_state.get("_auth_user")
-if auth_user:
-    st.markdown(_login_badge_html(auth_user), unsafe_allow_html=True)
-    st.sidebar.success(f"로그인됨: {auth_user.get('name') or auth_user.get('username')}")
-else:
-    st.sidebar.info("로그인 필요")
 
 UID = username if 'auth_status' in locals() and auth_status else None
 PROFILE = get_user_profile(UID)
@@ -1004,6 +965,7 @@ with tab_path:
             st_folium(result_map, height=500, width=None)
         else:
             st.error("(저장됨) 경로를 찾지 못했습니다.")
+
 
 
 
