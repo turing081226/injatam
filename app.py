@@ -865,4 +865,4 @@ with tab_path:
             st_folium(result_map, height=500, width=None)
         else:
             st.error("(저장됨) 경로를 찾지 못했습니다.")
-지금까지 했던 이야기 바탕으로 이거 최신으로 바꿔줄래
+
