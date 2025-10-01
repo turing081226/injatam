@@ -468,83 +468,59 @@ NAMES = list(MARKET["nodes"].keys())
 # ------------------------------------------------------------
 # 상단바: 로그인 + 회원가입 (우측)
 # ------------------------------------------------------------
-colL, colR = st.columns([0.8, 0.2])
+colL, colR = st.columns([0.8,0.2])
 with colL:
     st.title("🛍️ 부여 중앙시장 맞춤 탐색")
-
 with colR:
     with st.popover("🔐 계정", use_container_width=True):
+        # 로그인 (최신 시그니처)
+        name, auth_status, username = authenticator.login(
+            location="main",
+            fields={
+                "Form name": "로그인",
+                "Username": "아이디",
+                "Password": "비밀번호",
+                "Login": "로그인",
+            },
+            key="login_form",
+        ) or (None, None, None)
 
-        # ── 로그인 (성공/실패 사유 표시)
-        try:
-            name, auth_status, username = authenticator.login(
+        if auth_status:
+            st.success(f"{name} 님 환영합니다!")
+            authenticator.logout(
+                button_name="로그아웃",
                 location="main",
-                fields={
-                    "Form name": "로그인",
-                    "Username": "아이디",
-                    "Password": "비밀번호",
-                    "Login": "로그인",
-                },
-                key="login_form",
-            ) or (None, None, None)
-        except Exception as e:
-            st.error(f"로그인 위젯 오류: {e}")
-            name, auth_status, username = None, None, None
-
-        # 로그인 결과 안내
-        if auth_status is True:
-            st.success(f"✅ 로그인 성공: {name} 님 환영합니다!")
-            authenticator.logout(button_name="로그아웃", location="main", key="logout_btn")
+                key="logout_btn",
+            )
         elif auth_status is False:
-            # 아이디 존재 여부로 원인 구분
-            usernames = (config.get("credentials", {}) or {}).get("usernames", {}) or {}
-            if username and username not in usernames:
-                st.error("❌ 로그인 실패: 존재하지 않는 아이디입니다.")
-            else:
-                st.error("❌ 로그인 실패: 비밀번호가 올바르지 않습니다.")
+            st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
         else:
             st.info("로그인해 주세요.")
 
         st.divider()
         st.subheader("회원가입")
 
-        # ── 회원가입 (성공/실패 사유 표시, 어떤 예외든 잡아서 화면 유지)
-        reg_email = reg_user = reg_name = None
-        try:
-            reg_out = authenticator.register_user(
-                location="main",
-                fields={
-                    "Form name": "회원가입",
-                    "Email": "이메일",
-                    "Username": "아이디",
-                    "Name": "이름",                     # ← 현재 설치된 버전에 가장 호환되는 키
-                    "Password": "비밀번호",
-                    "Repeat password": "비밀번호 확인",
-                    "Register": "가입",
-                },
-                captcha=False,
-                password_hint=True,
-                key="register_form",
-            )
-
-            # 리턴값 표준화 (버전별로 3개 또는 4개 반환 가능)
-            if isinstance(reg_out, tuple):
-                if len(reg_out) == 3:
-                    reg_email, reg_user, reg_name = reg_out
-                elif len(reg_out) == 4:
-                    reg_email, reg_user, first, last = reg_out
-                    reg_name = f"{last}{first}".strip()
-        except Exception as e:
-            # 라이브러리에서 주는 자세한 사유(중복 아이디, 비밀번호 정책 위반 등)
-            st.error(f"❌ 회원가입 실패: {e}")
+        # 회원가입 (최신 시그니처: 이메일/아이디/이름 반환)
+        reg_email, reg_user, reg_name = authenticator.register_user(
+            location="main",
+            fields={
+                "Form name": "회원가입",
+                "Email": "이메일",
+                "Username": "아이디",
+                "Name": "이름",
+                "Password": "비밀번호",
+                "Repeat password": "비밀번호 확인",
+                "Register": "가입",
+            },
+            captcha=False,
+            password_hint=True,
+            key="register_form",
+        ) or (None, None, None)
 
         if reg_email and reg_user and reg_name:
-            # 내부 config 갱신 내용 저장
-            try:
-                save_auth_config(config)
-            except Exception as e:
-                st.warning(f"구성 저장 중 경고: {e}")
-            st.success(f"✅ 회원가입 완료: {reg_name}님, 이제 로그인해 주세요.")
+            # config가 내부에서 갱신되므로 저장
+            save_auth_config(config)
+            st.success("회원가입이 완료되었습니다. 로그인해 주세요.")
 
 UID = username if 'auth_status' in locals() and auth_status else None
 PROFILE = get_user_profile(UID)
@@ -715,7 +691,8 @@ with tab_chat:
             # Gemini 호출 (키 없으면 폴백)
             try:
                 import google.generativeai as genai
-                api = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY","")
+                api = st.secrets.get("GEMINI_API_KEY","")
+                print(api)
                 if not api:
                     st.info("Gemini API 키가 없어 임시 응답을 사용합니다.", icon="🔑")
                 else:
