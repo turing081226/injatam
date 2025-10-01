@@ -717,26 +717,44 @@ with tab_search:
 
 # ---- Chatbot Tab ----
 # ---- Chatbot Tab ----
+# ---- Chatbot Tab ----
 with tab_chat:
     st.subheader("부여 중앙시장 캐릭터 챗봇 (streamlit-chat)")
 
-    DEBUG_GEMINI = st.sidebar.toggle("🛠 Gemini 디버그", value=False)
+    # 사이드바 디버그/자가진단
+    DEBUG_GEMINI = st.sidebar.toggle("🛠 Gemini 디버그", value=True)
+    if st.sidebar.button("🔎 Gemini 자가진단"):
+        diag = {}
+        try:
+            import google.generativeai as genai
+            diag["google-generativeai"] = getattr(genai, "__version__", "unknown")
+        except Exception as e:
+            diag["import_error"] = repr(e)
+        key_from_env = bool(os.environ.get("GEMINI_API_KEY"))
+        key_from_secrets = bool(st.secrets.get("GEMINI_API_KEY", ""))
+        diag["has_env_key"] = key_from_env
+        diag["has_secrets_key"] = key_from_secrets
+        st.sidebar.write(diag)
 
     PERSONAS = {
-        "Sunny":  {"emoji":"🌞","desc":"명랑한 길잡이 — 밝고 친절, 추천 위주.","model":"gemini-1.5-flash","temperature":1.0,"max_tokens":512,
+        "Sunny":  {"emoji":"🌞","desc":"명랑한 길잡이 — 밝고 친절, 추천 위주.",
+                   "model":"gemini-1.5-flash","temperature":1.0,"max_tokens":512,
                    "system":"You are Sunny, a bright, friendly market guide for Bujeo Central Market. 답변은 자연스럽고 간결한 한국어로 하세요. 사용자 취향을 존중하고, 추천과 이유(대표 메뉴, 대략 거리/시간)를 짧게 덧붙이세요."},
-        "Charles":{"emoji":"🧭","desc":"분석형 플래너 — 경로/최적화 중심, 근거 제시.","model":"gemini-1.5-pro","temperature":0.6,"max_tokens":640,
+        "Charles":{"emoji":"🧭","desc":"분석형 플래너 — 경로/최적화 중심, 근거 제시.",
+                   "model":"gemini-1.5-flash","temperature":0.6,"max_tokens":640,
                    "system":"You are Charles, an analytical trip planner for Bujeo Central Market. 격식 있는 간결한 한국어로 말하고, 선택지·거리·예상 소요시간을 불릿으로 정리하세요."},
-        "son":    {"emoji":"🧒","desc":"귀여운 꼬마 가이드 — 쉬운 말, 라이트 톤.","model":"gemini-1.5-flash","temperature":1.1,"max_tokens":384,
+        "son":    {"emoji":"🧒","desc":"귀여운 꼬마 가이드 — 쉬운 말, 라이트 톤.",
+                   "model":"gemini-1.5-flash","temperature":1.1,"max_tokens":384,
                    "system":"You are Son, a cute kid guide for Bujeo Central Market. 친근하고 쉬운 한국어로, 짧고 명료하게 대답하세요. 어린 이용자도 이해할 수 있도록 설명하세요."},
-        "Becky":  {"emoji":"🍰","desc":"디저트/카페 전문가 — 감성 톤, 사진 스폿 제안.","model":"gemini-1.5-flash","temperature":0.9,"max_tokens":512,
+        "Becky":  {"emoji":"🍰","desc":"디저트/카페 전문가 — 감성 톤, 사진 스폿 제안.",
+                   "model":"gemini-1.5-flash","temperature":0.9,"max_tokens":512,
                    "system":"You are Becky, a dessert & cafe expert around Bujeo Central Market. 상냥한 한국어로, 디저트/음료 추천과 사진 스폿, 분위기 포인트를 짧게 알려주세요."},
-        "Aggie":  {"emoji":"🛒","desc":"시장 상인 감성 — 실속/가격/행사 정보 중시.","model":"gemini-1.5-flash","temperature":0.8,"max_tokens":512,
+        "Aggie":  {"emoji":"🛒","desc":"시장 상인 감성 — 실속/가격/행사 정보 중시.",
+                   "model":"gemini-1.5-flash","temperature":0.8,"max_tokens":512,
                    "system":"You are Aggie, a friendly market vendor persona. 반말은 자제하되 친근한 한국어로, 실속/가격/행사/혼잡 팁을 우선으로 알려주세요."},
     }
 
     colL, colR = st.columns([2, 1], vertical_alignment="top")
-
     with colR:
         persona = st.radio("답변자", list(PERSONAS.keys()), index=0)
         cfg = PERSONAS[persona]
@@ -747,16 +765,15 @@ with tab_chat:
     if "_chat_by_persona" not in st.session_state:
         st.session_state._chat_by_persona = {}
     history = st.session_state._chat_by_persona.setdefault(persona, [])
-
     if clear:
         st.session_state._chat_by_persona[persona] = []
+        history = []
 
-    # ── 도우미: 응답 텍스트 안전 추출
+    # 안전 추출
     def _extract_text(resp):
         try:
             if getattr(resp, "text", None):
                 return resp.text
-            # candidates -> parts 루트
             cands = getattr(resp, "candidates", None) or []
             if cands and getattr(cands[0], "content", None):
                 parts = getattr(cands[0].content, "parts", []) or []
@@ -766,74 +783,67 @@ with tab_chat:
             return ""
         return ""
 
-    # ── 도우미: Gemini 호출
-    def call_gemini(user_msg, cfg, hist_for_llm):
+    # 단순 경로(챗 세션 대신 1회성 generate_content 사용)
+    def call_gemini_simple(user_msg, cfg, hist_for_llm):
+        import traceback
         dbg = {"stage": "start"}
         try:
             try:
                 import google.generativeai as genai
+                dbg["lib_version"] = getattr(genai, "__version__", "unknown")
             except Exception as e:
                 dbg["error"] = "import_failed"
-                dbg["exc"] = repr(e)
+                dbg["exc"] = traceback.format_exc()
                 return None, dbg
 
-            api = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
-            if not (api or "").strip():
+            api = (os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")).strip()
+            if not api:
                 dbg["error"] = "no_api_key"
                 return None, dbg
 
             genai.configure(api_key=api)
-            preferred = [
-                cfg.get("model", "gemini-1.5-flash"),
-                "gemini-1.5-flash-latest",
-                "gemini-1.5-flash-8b",
-                "gemini-1.5-pro",
-                "gemini-1.5-pro-latest",
-            ]
-            # resolve_model이 실패해도 cfg 기본 사용
-            try:
-                model_name = resolve_model(preferred) or cfg.get("model", "gemini-1.5-flash")
-            except Exception as e:
-                model_name = cfg.get("model", "gemini-1.5-flash")
-                dbg["resolve_warn"] = repr(e)
 
+            # list_models()는 환경에 따라 막힐 수 있으니 하드코어 기본값을 사용
+            model_name = cfg.get("model", "gemini-1.5-flash")
             dbg["model_name"] = model_name
 
             model = genai.GenerativeModel(
                 model_name=model_name,
                 system_instruction=cfg["system"],
-                generation_config={
-                    "temperature": cfg["temperature"],
-                    "max_output_tokens": cfg["max_tokens"],
-                },
+                generation_config={"temperature": cfg["temperature"], "max_output_tokens": cfg["max_tokens"]},
             )
-            gem_hist = [{"role": ("user" if t["role"] == "user" else "model"),
-                         "parts": [{"text": t["content"]}]} for t in hist_for_llm]
 
-            chat = model.start_chat(history=gem_hist)
+            # 간단한 컨텍스트 연결(유저/모델 역할만 텍스트로 이어붙임)
+            convo = []
+            for t in hist_for_llm:
+                role = "User" if t["role"] == "user" else persona
+                convo.append(f"{role}: {t['content']}")
+            convo.append(f"User: {user_msg}")
+            prompt = "\n".join(convo)
 
-            resp = chat.send_message(user_msg)
+            with st.spinner("답변 작성 중…"):
+                resp = model.generate_content(prompt)
+
             txt = _extract_text(resp)
-            dbg["finish_reason"] = getattr(getattr(resp, "candidates", [None])[0], "finish_reason", None)
             pf = getattr(resp, "prompt_feedback", None)
             if pf and getattr(pf, "block_reason", None):
                 dbg["safety_block"] = str(pf.block_reason)
+            dbg["finish_reason"] = getattr(getattr(resp, "candidates", [None])[0], "finish_reason", None)
+            dbg["usage"] = str(getattr(resp, "usage_metadata", ""))
 
             if not txt:
-                # 텍스트가 비면 안전성 차단/클라이언트 형식 차이/빈 응답
                 dbg["error"] = "empty_text"
-                dbg["usage"] = str(getattr(resp, "usage_metadata", ""))  # 가볍게 문자열화
                 return None, dbg
 
             return txt.strip(), dbg
 
         except Exception as e:
-            # 모든 예외는 이유를 남겨서 폴백 원인을 보이게
             dbg["error"] = "request_failed"
-            dbg["exc"] = repr(e)
+            dbg["exc"] = traceback.format_exc()
             return None, dbg
 
     with colL:
+        # 히스토리 렌더
         for i, turn in enumerate(history):
             if turn["role"] == "user":
                 message(turn["content"], is_user=True, key=f"{persona}_user_{i}")
@@ -847,20 +857,20 @@ with tab_chat:
             st.session_state._chat_by_persona[persona] = hist
 
             fallback = f"(임시 답변 · {persona}) 좋은 질문이에요! 시장 지도를 기준으로 경로와 추천을 알려드릴 수 있어요."
-            reply, dbg = call_gemini(user_msg, cfg, st.session_state._chat_by_persona[persona][:-1])
+            reply, dbg = call_gemini_simple(user_msg, cfg, st.session_state._chat_by_persona[persona][:-1])
 
             if reply is None:
-                # 임시 답변 + 디버그 사유
                 reason = dbg.get("error") or dbg.get("safety_block") or "unknown"
                 if DEBUG_GEMINI:
-                    with st.expander("🔎 Gemini 디버그"):
-                        st.write({k: v for k, v in dbg.items() if k not in ("api",)})
+                    with st.expander("🔎 Gemini 디버그 (펼쳐서 자세히 보기)"):
+                        st.code(json.dumps(dbg, ensure_ascii=False, indent=2))
                 reply = f"{fallback}\n\n(🔧 임시 사유: {reason})"
 
             hist = st.session_state._chat_by_persona.get(persona, [])
             hist = hist + [{"role": "assistant", "content": reply}]
             st.session_state._chat_by_persona[persona] = hist
             st.rerun()
+
 
 # ---- Path Tab ----
 with tab_path:
@@ -996,6 +1006,7 @@ with tab_path:
             st_folium(result_map, height=500, width=None)
         else:
             st.error("(저장됨) 경로를 찾지 못했습니다.")
+
 
 
 
