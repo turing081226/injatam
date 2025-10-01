@@ -716,8 +716,11 @@ with tab_search:
                         st.caption("태그: " + ", ".join(node.get("tags", [])))
 
 # ---- Chatbot Tab ----
+# ---- Chatbot Tab ----
 with tab_chat:
     st.subheader("부여 중앙시장 캐릭터 챗봇 (streamlit-chat)")
+
+    DEBUG_GEMINI = st.sidebar.toggle("🛠 Gemini 디버그", value=False)
 
     PERSONAS = {
         "Sunny":  {"emoji":"🌞","desc":"명랑한 길잡이 — 밝고 친절, 추천 위주.","model":"gemini-1.5-flash","temperature":1.0,"max_tokens":512,
@@ -748,6 +751,88 @@ with tab_chat:
     if clear:
         st.session_state._chat_by_persona[persona] = []
 
+    # ── 도우미: 응답 텍스트 안전 추출
+    def _extract_text(resp):
+        try:
+            if getattr(resp, "text", None):
+                return resp.text
+            # candidates -> parts 루트
+            cands = getattr(resp, "candidates", None) or []
+            if cands and getattr(cands[0], "content", None):
+                parts = getattr(cands[0].content, "parts", []) or []
+                txts = [getattr(p, "text", "") for p in parts if hasattr(p, "text")]
+                return "\n".join([t for t in txts if t]).strip()
+        except Exception:
+            return ""
+        return ""
+
+    # ── 도우미: Gemini 호출
+    def call_gemini(user_msg, cfg, hist_for_llm):
+        dbg = {"stage": "start"}
+        try:
+            try:
+                import google.generativeai as genai
+            except Exception as e:
+                dbg["error"] = "import_failed"
+                dbg["exc"] = repr(e)
+                return None, dbg
+
+            api = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
+            if not (api or "").strip():
+                dbg["error"] = "no_api_key"
+                return None, dbg
+
+            genai.configure(api_key=api)
+            preferred = [
+                cfg.get("model", "gemini-1.5-flash"),
+                "gemini-1.5-flash-latest",
+                "gemini-1.5-flash-8b",
+                "gemini-1.5-pro",
+                "gemini-1.5-pro-latest",
+            ]
+            # resolve_model이 실패해도 cfg 기본 사용
+            try:
+                model_name = resolve_model(preferred) or cfg.get("model", "gemini-1.5-flash")
+            except Exception as e:
+                model_name = cfg.get("model", "gemini-1.5-flash")
+                dbg["resolve_warn"] = repr(e)
+
+            dbg["model_name"] = model_name
+
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                system_instruction=cfg["system"],
+                generation_config={
+                    "temperature": cfg["temperature"],
+                    "max_output_tokens": cfg["max_tokens"],
+                },
+            )
+            gem_hist = [{"role": ("user" if t["role"] == "user" else "model"),
+                         "parts": [{"text": t["content"]}]} for t in hist_for_llm]
+
+            chat = model.start_chat(history=gem_hist)
+
+            resp = chat.send_message(user_msg)
+            txt = _extract_text(resp)
+            dbg["finish_reason"] = getattr(getattr(resp, "candidates", [None])[0], "finish_reason", None)
+            pf = getattr(resp, "prompt_feedback", None)
+            if pf and getattr(pf, "block_reason", None):
+                dbg["safety_block"] = str(pf.block_reason)
+
+            if not txt:
+                # 텍스트가 비면 안전성 차단/클라이언트 형식 차이/빈 응답
+                dbg["error"] = "empty_text"
+                dbg["usage"] = str(getattr(resp, "usage_metadata", ""))  # 가볍게 문자열화
+                return None, dbg
+
+            return txt.strip(), dbg
+
+        except Exception as e:
+            # 모든 예외는 이유를 남겨서 폴백 원인을 보이게
+            dbg["error"] = "request_failed"
+            dbg["exc"] = repr(e)
+            return None, dbg
+
     with colL:
         for i, turn in enumerate(history):
             if turn["role"] == "user":
@@ -757,53 +842,21 @@ with tab_chat:
 
         user_msg = st.chat_input(f"{cfg['emoji']} {persona}에게 메시지를 보내세요…", key=f"chat_in_{persona}")
         if user_msg and user_msg.strip():
-            # 사용자 push (재할당)
             hist = st.session_state._chat_by_persona.get(persona, [])
             hist = hist + [{"role": "user", "content": user_msg}]
             st.session_state._chat_by_persona[persona] = hist
 
-            # 기본 폴백
             fallback = f"(임시 답변 · {persona}) 좋은 질문이에요! 시장 지도를 기준으로 경로와 추천을 알려드릴 수 있어요."
-            reply = fallback
+            reply, dbg = call_gemini(user_msg, cfg, st.session_state._chat_by_persona[persona][:-1])
 
-            # Gemini 호출 (키 없으면 폴백)
-            try:
-                import google.generativeai as genai
-                api = st.secrets.get("GEMINI_API_KEY","")
-                print(api)
-                if not api:
-                    st.info("Gemini API 키가 없어 임시 응답을 사용합니다.", icon="🔑")
-                else:
-                    genai.configure(api_key=api)
-                    preferred = [
-                        cfg.get("model", "gemini-1.5-flash"),
-                        "gemini-1.5-flash-latest",
-                        "gemini-1.5-flash-8b",
-                        "gemini-1.5-pro",
-                        "gemini-1.5-pro-latest",
-                        "gemini-pro",
-                        "gemini-1.0-pro",
-                    ]
-                    model_name = resolve_model(preferred) or cfg.get("model", "gemini-pro")
+            if reply is None:
+                # 임시 답변 + 디버그 사유
+                reason = dbg.get("error") or dbg.get("safety_block") or "unknown"
+                if DEBUG_GEMINI:
+                    with st.expander("🔎 Gemini 디버그"):
+                        st.write({k: v for k, v in dbg.items() if k not in ("api",)})
+                reply = f"{fallback}\n\n(🔧 임시 사유: {reason})"
 
-                    model = genai.GenerativeModel(
-                        model_name=model_name,
-                        system_instruction=cfg["system"],
-                        generation_config={
-                            "temperature": cfg["temperature"],
-                            "max_output_tokens": cfg["max_tokens"],
-                        },
-                    )
-                    hist_for_llm = st.session_state._chat_by_persona[persona][:-1]
-                    gem_hist = [{"role": ("user" if t["role"] == "user" else "model"), "parts": [{"text": t["content"]}]} for t in hist_for_llm]
-                    chat = model.start_chat(history=gem_hist)
-                    with st.spinner("답변 작성 중…"):
-                        resp = chat.send_message(user_msg)
-                    reply = (getattr(resp, "text", None) or "").strip() or fallback
-            except Exception:
-                pass
-
-            # 봇 push (재할당) + 즉시 갱신
             hist = st.session_state._chat_by_persona.get(persona, [])
             hist = hist + [{"role": "assistant", "content": reply}]
             st.session_state._chat_by_persona[persona] = hist
@@ -943,6 +996,7 @@ with tab_path:
             st_folium(result_map, height=500, width=None)
         else:
             st.error("(저장됨) 경로를 찾지 못했습니다.")
+
 
 
 
